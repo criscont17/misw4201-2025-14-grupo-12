@@ -13,42 +13,54 @@ Este sistema implementa un validador que distribuye solicitudes a múltiples mic
 
 1. Clona o descarga este repositorio
 2. Ejecuta: `docker-compose up --build`
-3. Accede a:
-   - Validador: http://localhost:5001
-   - RabbitMQ Management: http://localhost:15672 (usuario: guest, contraseña: guest)
+3. Revisa las **Instrucciones de instalación**.
 
-## Uso
+## Instrucciones de instalación
 
-Envía una solicitud POST al validador:
-
-````bash
-curl -X POST http://localhost:5001/process \
-  -H "Content-Type: application/json" \
-  -d '{"product_id": "12345", "action": "check_inventory"}'
-
-
-Validador: GET http://localhost:5001/health
-
-### Gateway
-
-```bash
-curl -X POST http://localhost:8080/consulta-inventario \
-  -H "Content-Type: application/json" \
-  -d '{"product_id": "12345", "action": "check_inventory"}'
-
-
-Validador: GET http://localhost:8080/api-health
-
-## Instrucciones de instalación:
-
-1. **Descarga todos los archivos** en una carpeta llamada `microservices-system`
+1. **Descarga todos los archivos** en una carpeta llamada `misw4201-2025-14-grupo-12`
 
 2. **Ejecuta el sistema:**
-   ```bash
+
+```bash
    cd microservices-system
    docker-compose up --build
 
-
 Dar de baja:
-   docker-compose down
-````
+docker-compose down
+```
+
+## Uso - AWS
+
+Envía una solicitud POST al validador pasando por el API Gateway:
+
+`````bash
+curl -X POST http://3.15.179.192:8080/consulta-inventario \
+  -H "Content-Type: application/json" \
+  -d '{"product_id": "P002", "action": "check_inventory"}'
+
+Validador: GET http://3.15.179.192:8080/api-health ````
+`````
+
+## Uso - Docker - Utilizando API Gateway
+
+Envía una solicitud POST al validador pasando por el API Gateway:
+
+`````bash
+curl -X POST http://localhost:8080/consulta-inventario \
+  -H "Content-Type: application/json" \
+  -d '{"product_id": "P002", "action": "check_inventory"}'
+
+Validador: GET http://localhost:8080/api-health ````
+`````
+
+## Uso - Docker - Omitiendo API Gateway
+
+Envía una solicitud POST al validador sin pasar por el API Gateway:
+
+```bash
+curl -X POST http://localhost:5001/process \
+  -H "Content-Type: application/json" \
+  -d '{"product_id": "P002", "action": "check_inventory"}'
+
+Validador: GET http://localhost:5001/health
+```
