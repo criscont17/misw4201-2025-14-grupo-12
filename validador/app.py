@@ -6,6 +6,7 @@ import os
 import time
 import sys
 import csv
+from collections import Counter
 
 sys.stdout.reconfigure(line_buffering=True)
 
@@ -20,8 +21,12 @@ request_start_times = {}
 
 METRICS_FILE = "metrics.csv"
 
+# Lock para escritura en CSV (evita colisiones entre hilos)
+metrics_lock = threading.Lock()
+
+# Inicializar CSV con encabezados si no existe
 if not os.path.exists(METRICS_FILE):
-    with open(METRICS_FILE, "w", newline="") as f:
+    with open(METRICS_FILE, "w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
         writer.writerow(
             [
@@ -30,28 +35,57 @@ if not os.path.exists(METRICS_FILE):
                 "request_id",
                 "status",
                 "extra_info",
+                "microservice_id",
+                "failed_microservices",
                 "proc_id",
                 "thread_id",
             ]
         )
 
 
-def log_metric(event, request_id=None, status="", extra_info=""):
+def log_metric(
+    event,
+    request_id=None,
+    status="",
+    extra_info="",
+    microservice_id="-",
+    failed_microservices=None,
+):
     proc_id = os.getpid()
     thread_id = threading.get_ident()
-    with open(METRICS_FILE, "a", newline="") as f:
-        writer = csv.writer(f)
-        writer.writerow(
-            [
-                time.time(),
-                event,
-                request_id or "-",
-                status,
-                extra_info,
-                proc_id,
-                thread_id,
-            ]
-        )
+
+    # Asegurarse que extra_info sea string
+    if not isinstance(extra_info, str):
+        try:
+            extra_info = json.dumps(extra_info, ensure_ascii=False)
+        except Exception:
+            extra_info = str(extra_info)
+
+    # Serializar lista de microservicios fallidos
+    failed_str = "-"
+    if failed_microservices is not None:
+        try:
+            failed_str = json.dumps(failed_microservices, ensure_ascii=False)
+        except Exception:
+            failed_str = str(failed_microservices)
+
+    # Escritura thread-safe
+    with metrics_lock:
+        with open(METRICS_FILE, "a", newline="", encoding="utf-8") as f:
+            writer = csv.writer(f)
+            writer.writerow(
+                [
+                    time.time(),
+                    event,
+                    request_id or "-",
+                    status,
+                    extra_info,
+                    microservice_id,
+                    failed_str,
+                    proc_id,
+                    thread_id,
+                ]
+            )
 
 
 def get_rabbitmq_connection():
@@ -64,13 +98,20 @@ def get_rabbitmq_connection():
                     host="rabbitmq", connection_attempts=5, retry_delay=3
                 )
             )
-            log_metric("rabbitmq_connect", status="success")
+            log_metric(
+                "rabbitmq_connect",
+                status="success",
+                microservice_id="-",
+                failed_microservices=[],
+            )
             return connection
         except Exception as e:
             log_metric(
                 "rabbitmq_connect",
                 status="failed",
                 extra_info=f"attempt {attempt+1}/{max_retries}: {e}",
+                microservice_id="-",
+                failed_microservices=[],
             )
             if attempt < max_retries - 1:
                 time.sleep(retry_delay)
@@ -93,10 +134,20 @@ def setup_rabbitmq_consumer():
                     {"microservice_id": microservice_id, "response": response_data}
                 )
 
-                # Latencia desde inicio del request hasta recepción
                 start_time = request_start_times.get(request_id)
                 latency = time.time() - start_time if start_time is not None else None
 
+                # Registro de la respuesta individual
+                log_metric(
+                    "microservice_response",
+                    request_id=request_id,
+                    status="received",
+                    extra_info=response_data,
+                    microservice_id=microservice_id,
+                    failed_microservices=[],
+                )
+
+                # Registro de que se almacenó y la latencia
                 log_metric(
                     "response_received",
                     request_id=request_id,
@@ -106,14 +157,28 @@ def setup_rabbitmq_consumer():
                         if latency
                         else f"from microservice {microservice_id}, total {len(responses[request_id])}"
                     ),
+                    microservice_id=microservice_id,
+                    failed_microservices=[],
                 )
 
             ch.basic_ack(delivery_tag=method.delivery_tag)
         except json.JSONDecodeError as e:
-            log_metric("response_error", status="json_decode_error", extra_info=str(e))
+            log_metric(
+                "response_error",
+                status="json_decode_error",
+                extra_info=str(e),
+                microservice_id="-",
+                failed_microservices=[],
+            )
             ch.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
         except Exception as e:
-            log_metric("response_error", status="processing_error", extra_info=str(e))
+            log_metric(
+                "response_error",
+                status="processing_error",
+                extra_info=str(e),
+                microservice_id="-",
+                failed_microservices=[],
+            )
             ch.basic_nack(delivery_tag=method.delivery_tag, requeue=True)
 
     while True:
@@ -132,10 +197,21 @@ def setup_rabbitmq_consumer():
             channel.basic_consume(
                 queue="validador_responses", on_message_callback=callback
             )
-            log_metric("consumer_ready", status="waiting_for_responses")
+            log_metric(
+                "consumer_ready",
+                status="waiting_for_responses",
+                microservice_id="-",
+                failed_microservices=[],
+            )
             channel.start_consuming()
         except Exception as e:
-            log_metric("consumer_error", status="connection_failed", extra_info=str(e))
+            log_metric(
+                "consumer_error",
+                status="connection_failed",
+                extra_info=str(e),
+                microservice_id="-",
+                failed_microservices=[],
+            )
             time.sleep(5)
 
 
@@ -147,16 +223,24 @@ def process_request():
         data = request.get_json()
         if not data:
             log_metric(
-                "process_request", status="failed", extra_info="No JSON data provided"
+                "process_request",
+                status="failed",
+                extra_info="No JSON data provided",
+                microservice_id="-",
+                failed_microservices=[],
             )
             return jsonify({"error": "No JSON data provided"}), 400
 
         current_request_id += 1
         request_id = str(current_request_id)
-
-        # Guardar inicio del request
         request_start_times[request_id] = time.time()
-        log_metric("request_start", request_id=request_id, status="received")
+        log_metric(
+            "request_start",
+            request_id=request_id,
+            status="received",
+            microservice_id="-",
+            failed_microservices=[],
+        )
 
         target_microservices = determine_target_microservices(data)
         send_to_rabbitmq(request_id, target_microservices, data)
@@ -171,9 +255,9 @@ def process_request():
             request_id=request_id,
             status="waiting_responses",
             extra_info=f"expecting {len(target_microservices)}",
+            microservice_id="-",
+            failed_microservices=[],
         )
-
-        from collections import Counter
 
         def normalize_response(resp):
             r = resp["response"].copy()
@@ -189,33 +273,32 @@ def process_request():
                 normalized = [normalize_response(r) for r in request_responses]
                 counts = Counter(normalized)
                 most_common = counts.most_common(1)
+
                 if most_common and most_common[0][1] >= 2:
                     idx = normalized.index(most_common[0][0])
                     valid_response = request_responses[idx]
+
                     if request_id in responses:
                         del responses[request_id]
+
                     final_wait_time = time.time() - start_time
 
                     log_metric(
-                        "process_response",
+                        "vote_result",
                         request_id=request_id,
-                        status="valid_response",
-                        extra_info=json.dumps(valid_response["response"])[
-                            :200
-                        ],  # truncado por seguridad
+                        status="consensus_reached",
+                        extra_info=valid_response["response"],
+                        microservice_id="-",
+                        failed_microservices=[],
                     )
 
-                    log_metric(
-                        "process_request",
-                        request_id=request_id,
-                        status="consensus",
-                        extra_info=f"completed in {final_wait_time:.2f}s",
-                    )
                     log_metric(
                         "latency_summary",
                         request_id=request_id,
                         status="success",
                         extra_info=f"responses={len(request_responses)}, total_time={final_wait_time:.2f}s",
+                        microservice_id="-",
+                        failed_microservices=[],
                     )
 
                     return jsonify(
@@ -226,28 +309,37 @@ def process_request():
                         }
                     )
 
-                current_responses = len(request_responses)
-                if current_responses >= len(target_microservices):
+                if len(request_responses) >= len(target_microservices):
                     break
+
             time.sleep(wait_interval)
-        # Si no hubo consenso, devolver error
+
         with responses_lock:
             request_responses = responses.get(request_id, [])
             if request_id in responses:
                 del responses[request_id]
+
         final_wait_time = time.time() - start_time
+        all_microservices = set(target_microservices)
+        responded_services = set(r["microservice_id"] for r in request_responses)
+        failed_microservices = list(all_microservices - responded_services)
 
         log_metric(
-            "process_request",
+            "vote_result",
             request_id=request_id,
             status="no_consensus",
-            extra_info=f"waited {final_wait_time:.2f}s, responses={len(request_responses)}",
+            extra_info="No consensus reached",
+            microservice_id="-",
+            failed_microservices=failed_microservices,
         )
+
         log_metric(
             "latency_summary",
             request_id=request_id,
             status="failed",
             extra_info=f"responses={len(request_responses)}, total_time={final_wait_time:.2f}s",
+            microservice_id="-",
+            failed_microservices=[],
         )
 
         return (
@@ -256,6 +348,7 @@ def process_request():
                     "error": "No se obtuvo consenso entre los microservicios de inventario.",
                     "request_id": request_id,
                     "responses": request_responses,
+                    "failed_microservices": failed_microservices,
                     "wait_time": f"{final_wait_time:.2f}s",
                 }
             ),
@@ -263,13 +356,21 @@ def process_request():
         )
 
     except Exception as e:
-        log_metric("process_request", status="error", extra_info=str(e))
+        log_metric(
+            "process_request",
+            status="error",
+            extra_info=str(e),
+            microservice_id="-",
+            failed_microservices=[],
+        )
         return jsonify({"error": str(e)}), 500
 
 
 @app.route("/health", methods=["GET"])
 def health_check():
-    log_metric("health_check", status="ok")
+    log_metric(
+        "health_check", status="ok", microservice_id="-", failed_microservices=[]
+    )
     return jsonify(
         {"status": "healthy", "service": "validador", "timestamp": time.time()}
     )
@@ -312,6 +413,8 @@ def send_to_rabbitmq(request_id, target_microservices, data):
                 request_id=request_id,
                 status="sent",
                 extra_info=f"to microservice {microservice_id}, send_time={send_time}",
+                microservice_id=microservice_id,
+                failed_microservices=[],
             )
 
         log_metric(
@@ -319,11 +422,19 @@ def send_to_rabbitmq(request_id, target_microservices, data):
             request_id=request_id,
             status="done",
             extra_info=f"sent {len(target_microservices)} messages",
+            microservice_id="-",
+            failed_microservices=[],
         )
+
         connection.close()
     except Exception as e:
         log_metric(
-            "send_to_rabbitmq", request_id=request_id, status="error", extra_info=str(e)
+            "send_to_rabbitmq",
+            request_id=request_id,
+            status="error",
+            extra_info=str(e),
+            microservice_id="-",
+            failed_microservices=[],
         )
         raise
 
