@@ -1,8 +1,8 @@
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
-from models import Base, Product
+from models import Base, Product, Order
 
-DATABASE_URL = "sqlite:///./inventario.db"
+DATABASE_URL = "sqlite:///./pedidos.db"
 engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
 SessionLocal = sessionmaker(bind=engine)
 
@@ -22,6 +22,8 @@ for p in products:
     exists = db.query(Product).filter_by(product_id=p.product_id).first()
     if not exists:
         db.add(p)
+
+# No insertar órdenes iniciales, ya que es histórico
 
 db.commit()
 db.close()
