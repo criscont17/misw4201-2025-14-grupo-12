@@ -46,10 +46,12 @@ microservices-system/
 
 ## Uso
 
+**Nota**: El sistema está desplegado en AWS y está disponible en: `http://18.224.93.76:8080`
+
 ### 1. Registro de Usuario
 
 ```bash
-curl -X POST http://localhost:8080/auth/register \
+curl -X POST http://18.224.93.76:8080/auth/register \
   -H "Content-Type: application/json" \
   -d '{
     "username": "testuser",
@@ -69,7 +71,7 @@ curl -X POST http://localhost:8080/auth/register \
 ### 2. Login para Obtener JWT
 
 ```bash
-curl -X POST http://localhost:8080/auth/login \
+curl -X POST http://18.224.93.76:8080/auth/login \
   -H "Content-Type: application/json" \
   -d '{"username": "testuser", "password": "testpass"}'
 ```
@@ -79,7 +81,7 @@ Respuesta: `{"token": "jwt_token_here"}`
 ### 3. Crear Pedido
 
 ```bash
-curl -X POST http://localhost:8080/pedidos/create_order \
+curl -X POST http://18.224.93.76:8080/pedidos/create_order \
   -H "Authorization: Bearer jwt_token_here" \
   -H "Content-Type: application/json" \
   -d '{"product_id": "P001", "quantity": 100}'
@@ -88,7 +90,7 @@ curl -X POST http://localhost:8080/pedidos/create_order \
 ### 4. Consultar Historial de Pedidos
 
 ```bash
-curl -X GET http://localhost:8080/pedidos/history \
+curl -X GET http://18.224.93.76:8080/pedidos/history \
   -H "Authorization: Bearer jwt_token_here"
 ```
 
